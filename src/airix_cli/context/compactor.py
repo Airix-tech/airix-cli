@@ -10,6 +10,7 @@ from airix_cli.memory.store import append_decision
 from airix_cli.memory.schema import TechnicalDecision
 
 SESSION_PATH = Path(".airix/session.json")
+REPL_HISTORY_PATH = Path(".airix/repl_history")
 TOKEN_THRESHOLD = 100_000  # ajustable según el modelo usado
 
 _encoder = None
@@ -122,9 +123,48 @@ def build_session_summary(messages: list[dict]) -> dict:
     return summary
 
 
+def summarize_with_llm(messages: list[dict]) -> dict:
+    """
+    Resumen de sesión usando el LLM activo en vez de la heurística por
+    palabras clave de `build_session_summary`: entiende el texto en lugar de
+    solo buscar coincidencias literales de "TypeError" o "decisión".
+
+    El import de `agent.client` es perezoso a propósito: así este módulo
+    sigue siendo puro y sin llamadas de red por defecto (lo que exige
+    `compact_session`, y de lo que dependen sus tests), y solo paga el costo
+    de la dependencia cuando alguien realmente pide un resumen por LLM.
+    """
+    from airix_cli.agent.client import summarize_conversation
+
+    return summarize_conversation(messages)
+
+
+def summarize_session(messages: list[dict]) -> dict:
+    """
+    Summarizer por defecto para las invocaciones reales de `compact_session`
+    (REPL y `airix compact`): intenta un resumen inteligente vía LLM y, si el
+    proveedor no está disponible o devuelve algo inválido, cae a la heurística
+    por palabras clave en vez de perder la compactación por completo.
+    """
+    try:
+        return summarize_with_llm(messages)
+    except Exception:
+        return build_session_summary(messages)
+
+
+def clear_repl_history(history_path: Path = REPL_HISTORY_PATH) -> None:
+    """Borra el historial de instrucciones del REPL (↑/↓, Ctrl+R)."""
+    try:
+        history_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def compact_session(
     memory_path: Path = Path(".airix/memory.json"),
     summarizer=None,
+    *,
+    clear_history: bool = True,
 ) -> None:
     """Genera un resumen estructurado y lo guarda como contenido de sesión."""
     messages = load_session()
@@ -155,3 +195,6 @@ def compact_session(
             "content": json.dumps(summary, ensure_ascii=False, indent=2),
         }
     ])
+
+    if clear_history:
+        clear_repl_history(memory_path.parent / "repl_history")

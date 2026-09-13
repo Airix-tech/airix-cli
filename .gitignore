@@ -14,6 +14,7 @@ wheels/
 .airix/checkpoints/
 .airix/session.json
 .airix/ast_cache.json
+.airix/repl_history
 .airix/*.tmp
 
 # Caché de pytest

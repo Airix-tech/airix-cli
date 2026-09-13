@@ -99,12 +99,38 @@ def build_workspace_context(
     root: Path,
     *,
     focus_paths: list[str] | None = None,
+    only_paths: list[str] | None = None,
     max_files: int = DEFAULT_MAX_FILES,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_context_bytes: int = DEFAULT_MAX_CONTEXT_BYTES,
 ) -> str:
-    """Read a bounded, safe snapshot of text files below *root* for the agent."""
+    """
+    Read a bounded, safe snapshot of text files below *root* for the agent.
+
+    With `only_paths`, the scan of the whole tree is skipped entirely and the
+    context is built from exactly those (already resolved, existing) relative
+    paths — used when the user referenced specific files (`@archivo.py`)
+    instead of asking for the whole project.
+    """
     root = root.resolve()
+
+    if only_paths is not None:
+        candidates = [root / p for p in only_paths]
+        header = [
+            "## ARCHIVOS REFERENCIADOS",
+            "El usuario pidió explícitamente estos archivos; el resto del repositorio no se incluyó.",
+            "Las líneas `### ruta` identifican el archivo cuyo contenido aparece inmediatamente después.",
+            "Raíz: . (rutas relativas)",
+        ]
+        return _render_sections(
+            root,
+            candidates,
+            header,
+            max_files=len(candidates),
+            max_file_bytes=max_file_bytes,
+            max_context_bytes=max_context_bytes,
+        )
+
     patterns = _gitignore_patterns(root)
     candidates = sorted(
         (
@@ -130,6 +156,25 @@ def build_workspace_context(
         "Las líneas `### ruta` identifican el archivo cuyo contenido aparece inmediatamente después.",
         "Raíz: . (rutas relativas)",
     ]
+    return _render_sections(
+        root,
+        candidates,
+        sections,
+        max_files=max_files,
+        max_file_bytes=max_file_bytes,
+        max_context_bytes=max_context_bytes,
+    )
+
+
+def _render_sections(
+    root: Path,
+    candidates: list[Path],
+    sections: list[str],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_context_bytes: int,
+) -> str:
     included = 0
     used_bytes = sum(len(line.encode("utf-8")) + 1 for line in sections)
     for path in candidates:
