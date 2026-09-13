@@ -96,7 +96,7 @@ airix CLI (Typer)
   |
   +--> context.workspace / compactor
   |
-  +--> agent.client (Gemini)
+  +--> agent.client (Gemini / Anthropic / Ollama) + agent.mcp_manager (cliente MCP)
   |
   +--> staging.* (tmp, tests, checkpoints, git review)
   |
@@ -123,7 +123,9 @@ airix-cli/
 │       ├── cli.py
 │       ├── agent/
 │       │   ├── __init__.py
-│       │   └── client.py
+│       │   ├── client.py
+│       │   ├── intent.py
+│       │   └── mcp_manager.py
 │       ├── ast_engine/
 │       │   ├── __init__.py
 │       │   ├── cache.py
@@ -135,12 +137,15 @@ airix-cli/
 │       │   ├── analyze.py
 │       │   ├── compact.py
 │       │   ├── init.py
+│       │   ├── llm.py
+│       │   ├── mcp.py
 │       │   ├── rewind.py
 │       │   ├── run.py
 │       │   └── workspace.py
 │       ├── context/
 │       │   ├── __init__.py
 │       │   ├── compactor.py
+│       │   ├── references.py
 │       │   └── workspace.py
 │       ├── memory/
 │       │   ├── __init__.py
@@ -148,6 +153,7 @@ airix-cli/
 │       │   └── store.py
 │       ├── repl/
 │       │   ├── __init__.py
+│       │   ├── completion.py
 │       │   └── console.py
 │       └── staging/
 │           ├── __init__.py
@@ -158,10 +164,13 @@ airix-cli/
 └── test/
     ├── test_ast_cache.py
     ├── test_ast_graph.py
+    ├── test_dispatch_mode.py
     ├── test_fswriter.py
     ├── test_git_review.py
     ├── test_init_profile.py
+    ├── test_intent.py
     ├── test_memory.py
+    ├── test_references.py
     └── test_workspace_context.py
 ```
 
@@ -177,7 +186,7 @@ La entrada principal del proyecto se define con Typer:
 
 - nombre del comando: airix
 - subcomandos: init, compact, run, rewind, analyze
-- sub-aplicación: workspace
+- sub-aplicaciones: workspace, llm, mcp
 
 Es la capa de orquestación de todo el sistema y conecta la interfaz con los módulos funcionales.
 
@@ -197,6 +206,10 @@ Es la capa de orquestación de todo el sistema y conecta la interfaz con los mó
   - crea un workspace multi-repo
 - airix workspace add
   - registra repositorios dentro de ese workspace
+- airix llm show / list / set
+  - consulta y cambia el proveedor/modelo LLM activo (gemini, anthropic, ollama)
+- airix mcp add / list / remove
+  - gestiona los servidores MCP configurados en .airix/mcp_config.json
 
 ---
 
@@ -259,7 +272,13 @@ La función save_memory usa escritura atómica con archivo temporal + os.replace
 
 Archivo: src/airix_cli/agent/client.py
 
-El agente utiliza Google Gemini para producir cambios de código. La comunicación se estructura como una llamada con:
+El agente soporta tres proveedores intercambiables (`airix llm set <provider> <model>`):
+
+- `gemini` (nube, default) vía el SDK `google-genai`
+- `anthropic` (nube, Claude) vía el SDK `anthropic`
+- `ollama` (local) vía HTTP directo a `/api/chat`
+
+La comunicación se estructura como una llamada con:
 
 - system_instruction con gobernanza
 - memory_context
@@ -304,6 +323,79 @@ La herramienta construye un snapshot del repositorio para alimentar el modelo. E
 
 Esto evita saturar el prompt con demasiados archivos o artefactos del entorno.
 
+`build_workspace_context` acepta además `only_paths`: en vez de recorrer todo el árbol, arma el contexto a partir de exactamente esas rutas relativas (ya resueltas). Se usa cuando el usuario referenció archivos puntuales en vez de pedir el proyecto completo (ver 5.5.1).
+
+#### 5.5.1 Referencias `@` y selección de contexto
+
+Archivo: src/airix_cli/context/references.py, función `_context_for_instruction` en src/airix_cli/commands/run.py
+
+Mandar siempre el workspace completo es costoso, sobre todo con un LLM local (puede añadir varios segundos solo para leer el contexto, incluso antes de generar una sola palabra). Para controlar cuánto repositorio viaja en cada mensaje, la instrucción del usuario se interpreta así:
+
+- `@ruta/archivo.py` o `@archivo.py` → referencia un archivo puntual. Se busca primero por ruta relativa exacta y, si no existe, por nombre de archivo en todo el árbol (respetando los mismos directorios ignorados que el escaneo de workspace). Si el nombre es ambiguo (existe en más de una carpeta), se incluyen todas las coincidencias.
+- `@proyecto`, `@project`, `@all`, `@workspace`, `@codebase`, `@repo`, `@repositorio`, o un `@` suelto sin nada detrás → piden el contexto completo del repositorio (el comportamiento de antes de existir referencias explícitas).
+- Mencionar un nombre de archivo sin `@` (p. ej. "corrige deploy_yolo.py") sigue funcionando igual que con `@`, por compatibilidad con el uso ya existente.
+- Una **consulta** (analizar/revisar/preguntar, ver 5.4.1) sin ninguna referencia no manda contenido de archivos: evita el costo de escanear y leer el repo para algo como "hola, cómo estás".
+- Un **pedido de cambio** sin ninguna referencia sí manda el repositorio completo, porque el agente necesita verlo para decidir dónde aplicar el cambio.
+- Una referencia a un archivo que no existe se avisa en el CLI (`No se encontró @nombre.py en el repositorio.`) y no interrumpe el resto de la instrucción.
+
+El panel "Procesando instrucción" siempre muestra qué contexto se usó (`proyecto completo`, `archivo(s): ...`, o `sin archivos`), para que quede claro qué vio el modelo.
+
+---
+
+### 5.5.2 Cliente MCP (Model Context Protocol)
+
+Archivo: src/airix_cli/agent/mcp_manager.py, src/airix_cli/commands/mcp.py
+
+airix puede actuar como **cliente MCP**: conectarse a servidores MCP externos
+(vía stdio, ej. `npx algún-servidor-mcp`) para que el agente use sus
+herramientas al responder consultas.
+
+#### Configuración
+
+Los servidores se declaran en `.airix/mcp_config.json`, con el mismo formato
+que usa Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "figma": {"command": "npx", "args": ["-y", "figma-mcp-server"], "env": {"FIGMA_API_KEY": "..."}}
+  }
+}
+```
+
+Se gestionan con `airix mcp add/list/remove` (CLI) o `/mcp add/remove/show/tools/reload`
+(REPL, ver 5.7).
+
+#### `McpManager`: puente síncrono/asíncrono
+
+El SDK oficial `mcp` es enteramente asíncrono, pero el resto de airix (REPL,
+`agent/client.py`) es síncrono. `McpManager` resuelve esto corriendo un event
+loop propio en un thread daemon que vive durante toda la sesión del REPL, y
+expone una fachada síncrona (`list_tools`, `call_tool`, `shutdown`). Así, los
+servidores se conectan una sola vez al arrancar el REPL (no en cada
+instrucción): levantar un subproceso `npx` puede tardar 1-3s, y pagar ese
+costo por turno haría lenta cualquier consulta con herramientas.
+
+Las tools de cada servidor se registran con un nombre calificado
+(`servidor__tool`) para evitar colisiones entre servidores, y un servidor que
+falla al conectar no impide que los demás queden disponibles.
+
+#### Tool-calling
+
+Cuando hay servidores MCP conectados y el proveedor activo es `gemini` o
+`anthropic`, las consultas (`answer_question`) se resuelven con un loop de
+tool-calling acotado (máximo 5 idas y vueltas): el modelo pide ejecutar una
+herramienta, `McpManager.call_tool` la ejecuta y devuelve el resultado, y el
+modelo continúa hasta dar una respuesta final. Este path no transmite en
+streaming (se pierde la respuesta incremental token a token): se muestra un
+aviso "Consultando herramientas MCP..." y luego la respuesta completa.
+
+`ollama` queda fuera del tool-calling en esta iteración (sin soporte nativo
+confiable en modelos como qwen2.5-coder:7b) y sigue el path de completions
+normal sin usar tools, aunque haya servidores MCP configurados. Del mismo
+modo, `propose_changes` (modo cambios) no usa MCP tools todavía — queda como
+extensión futura (ver sección 13).
+
 ---
 
 ### 5.6 Compactor de contexto
@@ -338,6 +430,8 @@ La interacción principal se realiza mediante un REPL con Rich.
 #### Comandos del REPL
 
 - help: muestra ayuda
+- llm show / list / set: consulta y cambia el proveedor/modelo LLM activo
+- mcp show / tools / add / remove / reload: gestiona servidores MCP y sus herramientas (ver 5.5.2)
 - review: revisa los archivos en .tmp/
 - compact: fuerza compactación
 - salir: cierra la sesión
@@ -489,21 +583,29 @@ El proyecto usa:
 - watchdog
 - tomli-w
 - google-genai
+- anthropic
+- mcp
+- prompt-toolkit
 
 Estas dependen del archivo pyproject.toml.
 
 ### Variables requeridas
 
-Para que el agente pueda consultar Gemini, el entorno debe contar con alguna de estas variables:
+Según el proveedor LLM activo (`airix llm set <provider> <model>`), el entorno
+debe contar con la API key correspondiente:
 
-- GEMINI_API_KEY
-- GOOGLE_API_KEY
+- GEMINI_API_KEY o GOOGLE_API_KEY (proveedor `gemini`, default)
+- ANTHROPIC_API_KEY (proveedor `anthropic`, Claude)
+- `ollama` no necesita API key, pero requiere `ollama serve` corriendo en local
 
 Ejemplo:
 
 ```bash
 export GEMINI_API_KEY=tu_clave
 ```
+
+Los servidores MCP (ver 5.5.2) no requieren variables de entorno propias de
+airix; cada servidor declara las suyas en `.airix/mcp_config.json` (campo `env`).
 
 ---
 
@@ -542,6 +644,15 @@ airix compact
 # Workspace multi-repo
 airix workspace init <nombre>
 airix workspace add <ruta-a-un-repo> --workspace <ruta-al-workspace>
+
+# Proveedor/modelo LLM activo
+airix llm show
+airix llm set anthropic claude-sonnet-5
+
+# Servidores MCP
+airix mcp add figma npx --env FIGMA_API_KEY=... -- -y figma-mcp-server
+airix mcp list
+airix mcp remove figma
 ```
 
 ---
@@ -554,15 +665,21 @@ Cuando se inicializa el repositorio, se crea la estructura:
 .airix/
 ├── ast_cache.json
 ├── checkpoints/
+├── llm_config.json
+├── mcp_config.json
 ├── memory.json
+├── repl_history
 ├── session.json
 ```
 
 ### Propósito de cada archivo
 
-- ast_cache.json: cache de análisis AST y hashes de archivos
+- ast_cache.json: cache de análisis AST (Python y TypeScript) y hashes de archivos
 - checkpoints/: instantáneas comprimidas del repositorio para rewind
+- llm_config.json: proveedor y modelo LLM activo (gemini/anthropic/ollama)
+- mcp_config.json: servidores MCP configurados (ver 5.5.2)
 - memory.json: memoria persistente del proyecto
+- repl_history: historial de instrucciones del REPL (↑/↓, Ctrl+R); se reinicia al compactar
 - session.json: historial activo del REPL o resumen compacto
 
 ---
@@ -588,11 +705,13 @@ Esto convierte el flujo en un proceso más seguro y auditable.
 
 El proyecto es una base funcional y orientada a flujo controlado, pero tiene límites importantes:
 
-- el motor AST está centrado en TypeScript y TSX
-- la resolución de imports es simplificada y no replica completamente el comportamiento de un bundler real
-- la compactación de sesión es un placeholder heurístico en algunos puntos
+- el motor AST soporta Python y TypeScript/TSX; otros lenguajes quedan sin analizar
+- la resolución de imports es simplificada y no replica completamente el comportamiento de un bundler o de `sys.path` real
+- la compactación de sesión cae a un resumen heurístico si el LLM no está disponible
 - la capacidad del agente depende de la calidad del contexto y de la disponibilidad de la API del modelo
 - el modelo de generación exige respuestas JSON estrictas, lo que exige una disciplina fuerte en la salida del agente
+- el tool-calling con servidores MCP solo funciona con los proveedores `gemini`/`anthropic`, y solo en modo consulta (`propose_changes` no usa tools todavía)
+- el path de tool-calling MCP no soporta streaming: la respuesta se muestra completa al terminar, no token a token
 
 Estas limitaciones son bastante típicas en proyectos de automatización local con IA y marcan claramente los puntos de extensión futura.
 
@@ -603,12 +722,13 @@ Estas limitaciones son bastante típicas en proyectos de automatización local c
 El sistema está listo para evolucionar en varias direcciones:
 
 1. soporte más amplio de lenguajes y parsers
-2. resolución completa de imports con tsconfig, aliases y módulos
+2. resolución completa de imports con tsconfig, aliases y módulos (TS) o `sys.path` real (Python)
 3. resumen de contexto por IA más avanzado
-4. soporte para múltiples modelos con configuración por proveedor
-5. auditoría extendida de decisiones y tracking de errores
-6. mejora del workspace multi-repo con contexto cruzado entre repositorios
-7. panel de métricas de análisis, compactación y tiempo de validación
+4. tool-calling MCP en `propose_changes` (modo cambios), no solo en consultas
+5. tool-calling MCP con Ollama (requiere un modelo local con soporte confiable)
+6. auditoría extendida de decisiones y tracking de errores
+7. mejora del workspace multi-repo con contexto cruzado entre repositorios
+8. panel de métricas de análisis, compactación y tiempo de validación
 
 ---
 
