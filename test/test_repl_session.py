@@ -17,7 +17,7 @@ def test_repl_records_instructions_and_answers_in_session(tmp_path, monkeypatch)
 
     inputs = iter(["refactoriza el parser", "/salir"])
     monkeypatch.setattr(run_module, "_read_repl_input", lambda *a, **k: next(inputs))
-    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda instruction, root: "hecho")
+    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda instruction, root, **_kwargs: "hecho")
     monkeypatch.setattr(run_module, "print_banner", lambda *a, **k: None)
     monkeypatch.setattr(run_module.console, "print", lambda *a, **k: None)
 
@@ -60,7 +60,7 @@ def test_repl_reports_unknown_slash_command(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(run_module, "_read_repl_input", lambda *a, **k: next(inputs))
     monkeypatch.setattr(run_module, "print_banner", lambda *a, **k: None)
     called = []
-    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda *a: called.append(a))
+    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda *a, **k: called.append(a))
 
     run_module.start_repl(test_cmd=None, provider=None, model=None)
 
@@ -85,7 +85,7 @@ def test_ctrl_c_cancels_current_line_without_exiting(tmp_path, monkeypatch):
     printed = []
     monkeypatch.setattr(run_module.console, "print", lambda *a, **k: printed.append(a))
     called = []
-    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda *a: called.append(a))
+    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda *a, **k: called.append(a))
 
     # No debe propagar KeyboardInterrupt ni terminar el proceso: solo cancela
     # la línea actual y vuelve a pedir entrada.
@@ -106,7 +106,7 @@ def test_ctrl_d_exits_the_repl(tmp_path, monkeypatch):
     monkeypatch.setattr(run_module, "print_banner", lambda *a, **k: None)
     monkeypatch.setattr(run_module.console, "print", lambda *a, **k: None)
     called = []
-    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda *a: called.append(a))
+    monkeypatch.setattr(run_module, "_dispatch_to_agent", lambda *a, **k: called.append(a))
 
     # No debe lanzar la excepción hacia afuera: Ctrl+D en línea vacía cierra
     # el REPL igual que /salir.

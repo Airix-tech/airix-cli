@@ -2,6 +2,7 @@
 import atexit
 import re
 import shlex
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import typer
@@ -42,6 +43,7 @@ from airix_cli.agent.client import (
 )
 from airix_cli.agent.intent import is_change_request
 from airix_cli.agent.mcp_manager import add_server, get_mcp_manager, load_mcp_config, remove_server
+from airix_cli.commands.analyze import run_analysis
 from airix_cli.context.references import parse_references, resolve_reference
 from airix_cli.context.workspace import build_workspace_context
 
@@ -74,22 +76,48 @@ def _requested_workspace_paths(instruction: str) -> list[str]:
     return re.findall(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+", instruction)
 
 
+@dataclass
+class ContextScope:
+    """
+    Alcance de contexto fijado explícitamente por el usuario (@proyecto,
+    @archivo.py o @ninguno), persistido durante toda la sesión del REPL. Una
+    vez fijado, las instrucciones siguientes sin ninguna referencia @ lo
+    siguen usando en vez de resolver desde cero en cada turno: alcanza con
+    escribir @proyecto una sola vez por sesión, no en cada mensaje.
+    """
+    kind: str = "unset"  # "unset" | "none" | "project" | "files"
+    files: list[str] = field(default_factory=list)
+
+    def describe(self) -> str:
+        if self.kind == "project":
+            return "proyecto completo"
+        if self.kind == "files":
+            return f"archivo(s): {', '.join(self.files)}"
+        if self.kind == "none":
+            return "sin archivos"
+        return "sin fijar (usa @archivo.py, @proyecto o @ninguno)"
+
+
 def _context_for_instruction(
-    instruction: str, repo_root: Path, *, change_request: bool
+    instruction: str, repo_root: Path, *, change_request: bool, scope: ContextScope
 ) -> tuple[str, str, list[str]]:
     """
     Decide cuánto del repositorio se manda al agente, según la instrucción:
 
     - `@proyecto`, `@all`, `@workspace`... (o un `@` suelto) -> el repo completo,
-      igual que antes de existir referencias explícitas.
+      y ese alcance queda fijado en `scope` para los próximos turnos.
     - `@archivo.py`, o simplemente mencionar "archivo.py" sin @ -> solo ese
-      archivo, en vez de todo el repositorio.
-    - nada de lo anterior en una consulta (analizar/revisar/preguntar) -> sin
+      archivo, en vez de todo el repositorio; también fija `scope`.
+    - `@ninguno`/`@ninguna`/`@none`/`@nada` -> reinicia `scope`, dejando de
+      mandar código hasta la próxima referencia explícita.
+    - nada de lo anterior, pero `scope` ya estaba fijado en un turno previo ->
+      se reusa ese alcance (persistencia entre turnos de la misma sesión).
+    - nada de lo anterior y `scope` nunca se fijó, en una consulta -> sin
       contenido de archivos: evita pagar el escaneo completo del workspace
       (varios segundos con un LLM local) para un simple "hola, cómo estás".
-    - nada de lo anterior en un pedido de cambio -> el repo completo, como
-      antes: sin un archivo puntual el agente necesita ver el proyecto para
-      ubicar dónde aplicar el cambio.
+    - nada de lo anterior y `scope` nunca se fijó, en un pedido de cambio ->
+      el repo completo: sin un archivo puntual el agente necesita ver el
+      proyecto para ubicar dónde aplicar el cambio.
 
     Devuelve (contexto, descripción para el panel, referencias @ no encontradas).
     """
@@ -100,17 +128,33 @@ def _context_for_instruction(
         matches = [resolved] if isinstance(resolved, str) else (resolved or [])
         files.extend(path for path in matches if path not in files)
 
+    if refs.none_requested:
+        scope.kind, scope.files = "none", []
+        return "", "sin archivos (reiniciado con @ninguno)", refs.unresolved
+
     if refs.whole_project:
+        scope.kind, scope.files = "project", []
         return build_workspace_context(repo_root, focus_paths=files), "proyecto completo", refs.unresolved
+
     if files:
+        scope.kind, scope.files = "files", files
         context = build_workspace_context(repo_root, only_paths=files)
         return context, f"archivo(s): {', '.join(files)}", refs.unresolved
+
+    if scope.kind == "project":
+        return build_workspace_context(repo_root), f"{scope.describe()} (persistido)", refs.unresolved
+    if scope.kind == "files":
+        context = build_workspace_context(repo_root, only_paths=scope.files)
+        return context, f"{scope.describe()} (persistido)", refs.unresolved
+    if scope.kind == "none":
+        return "", f"{scope.describe()} (fijado con @ninguno)", refs.unresolved
+
     if change_request:
         return build_workspace_context(repo_root), "proyecto completo (sin @, se asume necesario)", refs.unresolved
     return "", "sin archivos (usa @archivo.py o @proyecto para incluir código)", refs.unresolved
 
 
-def _dispatch_to_agent(instruction: str, repo_root: Path) -> str | None:
+def _dispatch_to_agent(instruction: str, repo_root: Path, *, scope: ContextScope | None = None) -> str | None:
     """
     Envía la instrucción del usuario al agente LLM. Las consultas (analizar,
     revisar, explicar) se responden directamente en el CLI; solo las peticiones
@@ -120,8 +164,10 @@ def _dispatch_to_agent(instruction: str, repo_root: Path) -> str | None:
     governance = AGENT_MD_PATH.read_text(encoding="utf-8") if AGENT_MD_PATH.exists() else ""
     memory_context = bootstrap_context()
     change_request = is_change_request(instruction)
+    if scope is None:
+        scope = ContextScope()
     workspace_context, context_note, unresolved = _context_for_instruction(
-        instruction, repo_root, change_request=change_request
+        instruction, repo_root, change_request=change_request, scope=scope
     )
 
     if unresolved:
@@ -239,6 +285,30 @@ def _review_staged_changes(repo_root: Path, test_command: list[str] | None) -> N
     consolidate(decisions, repo_root, rationale)
 
 
+def _run_analyze_command(repo_root: Path, args: list[str]) -> None:
+    """
+    Corre el motor AST (caché diferencial + invalidación en cascada) sin salir
+    del REPL. Sin argumentos escanea todo el repo (.py/.ts/.tsx); con
+    argumentos, solo reanaliza esos archivos puntuales.
+    """
+    console.print(
+        f"[dim]Analizando {len(args) if args else 'todos los'} archivo(s) candidato(s)...[/dim]"
+    )
+    try:
+        reanalyzed = run_analysis(repo_root, args or None)
+    except (FileNotFoundError, RuntimeError) as e:
+        print_status(f"Error analizando: {e}", style="red", icon="✗")
+        return
+
+    if not reanalyzed:
+        print_status("No se encontraron archivos para analizar.", style="yellow", icon="!")
+        return
+
+    print_status(f"{len(reanalyzed)} módulo(s) reanalizado(s) (incluye cascada).")
+    for f in reanalyzed:
+        console.print(f"  - {f}")
+
+
 def _read_repl_input(session: PromptSession) -> str:
     """
     Lee la siguiente línea del REPL con autocompletado de referencias `@` y de
@@ -266,6 +336,8 @@ def get_repl_completion_candidates(incomplete: str) -> list[str]:
         "/help",
         "/llm",
         "/mcp",
+        "/contexto",
+        "/analyze",
         "/review",
         "/compact",
         "/salir",
@@ -287,11 +359,11 @@ def get_repl_completion_candidates(incomplete: str) -> list[str]:
     if "mcp".startswith(normalized):
         suggestions.extend(["/mcp show", "/mcp list", "/mcp tools", "/mcp add", "/mcp remove", "/mcp reload"])
 
-    for command in ["/help", "/review", "/compact", "/salir"]:
+    for command in ["/help", "/contexto", "/analyze", "/review", "/compact", "/salir"]:
         if command.startswith(prefix):
             suggestions.append(command)
 
-    if normalized in {"help", "review", "compact", "salir"}:
+    if normalized in {"help", "contexto", "analyze", "review", "compact", "salir"}:
         suggestions.append(f"/{normalized}")
 
     return sorted(set(suggestions))
@@ -482,7 +554,9 @@ def start_repl(
     ))
     console.print(
         "[dim]Escribe una instrucción o usa [cyan]/help[/cyan] para ver los comandos. "
-        "Escribe [cyan]@[/cyan] para referenciar un archivo o [cyan]@proyecto[/cyan] para todo el repo. "
+        "Escribe [cyan]@[/cyan] para referenciar un archivo o [cyan]@proyecto[/cyan] para todo el repo: "
+        "ese alcance se mantiene en las preguntas siguientes hasta que pongas otra referencia o "
+        "[cyan]@ninguno[/cyan] (usa [cyan]/contexto[/cyan] para ver cuál está activo). "
         "Flecha arriba recupera comandos de sesiones anteriores.[/dim]\n"
     )
 
@@ -505,6 +579,7 @@ def start_repl(
         complete_while_typing=True,
         history=FileHistory(str(REPL_HISTORY_PATH)),
     )
+    context_scope = ContextScope()
 
     while True:
         # Compactación dinámica al alcanzar el umbral crítico de tokens,
@@ -547,6 +622,10 @@ def start_repl(
             print_help()
             continue
 
+        if command == "contexto":
+            print_status(f"Contexto activo: {context_scope.describe()}", style="cyan", icon="📎")
+            continue
+
         if command and (handle_llm_command(user_input) or handle_mcp_command(user_input)):
             continue
 
@@ -554,6 +633,9 @@ def start_repl(
         # sesión. Antes únicamente se guardaban los comandos con "/", así que
         # el historial quedaba vacío y la compactación automática nunca se
         # disparaba pese a evaluarse en cada vuelta.
+        if command == "analyze" or command.startswith("analyze "):
+            _run_analyze_command(repo_root, command.split()[1:])
+            continue
         if command == "review":
             _review_staged_changes(repo_root, test_command)
             continue
@@ -568,7 +650,7 @@ def start_repl(
 
         messages.append({"role": "user", "content": user_input})
         save_session(messages)
-        answer = _dispatch_to_agent(user_input, repo_root)
+        answer = _dispatch_to_agent(user_input, repo_root, scope=context_scope)
         if answer:
             messages.append({"role": "assistant", "content": answer})
             save_session(messages)

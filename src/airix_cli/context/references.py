@@ -19,6 +19,16 @@ _WHOLE_PROJECT_KEYWORDS = {
     "repositorio",
 }
 
+# Palabras que piden reiniciar el alcance de contexto persistido (ver
+# ContextScope en commands/run.py) y volver a no mandar código hasta la
+# próxima referencia explícita.
+_NONE_KEYWORDS = {
+    "ninguno",
+    "ninguna",
+    "none",
+    "nada",
+}
+
 # El lookbehind exige que la @ esté al inicio o precedida de espacio, para no
 # disparar con direcciones de correo ("foo@bar.com") dentro de la instrucción.
 _REFERENCE_PATTERN = re.compile(r"(?<!\S)@(\S*)")
@@ -37,6 +47,7 @@ def _clean_token(token: str) -> str:
 @dataclass
 class ParsedReferences:
     whole_project: bool = False
+    none_requested: bool = False
     files: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
 
@@ -78,6 +89,9 @@ def parse_references(instruction: str, root: Path) -> ParsedReferences:
     - `@ruta/archivo.py` referencia un archivo puntual del repositorio.
     - `@proyecto`, `@all`, `@workspace`... (o un `@` suelto) piden el contexto
       completo, como antes de tener referencias explícitas.
+    - `@ninguno`, `@ninguna`, `@none`, `@nada` piden reiniciar el alcance
+      persistido (ver ContextScope en commands/run.py) y volver a no mandar
+      código hasta la próxima referencia explícita.
 
     Una instrucción sin ningún `@` devuelve un `ParsedReferences` vacío: ese
     caso se resuelve aparte (ver `_context_for_instruction` en commands/run.py)
@@ -90,6 +104,9 @@ def parse_references(instruction: str, root: Path) -> ParsedReferences:
         token = _clean_token(match.group(1))
         if not token or _normalize(token) in _WHOLE_PROJECT_KEYWORDS:
             result.whole_project = True
+            continue
+        if _normalize(token) in _NONE_KEYWORDS:
+            result.none_requested = True
             continue
         resolved = resolve_reference(token, root)
         if resolved is None:

@@ -50,6 +50,8 @@ def print_help() -> None:
     commands.add_row("/mcp add <nombre> <comando> [args...]", "Agrega un servidor MCP a .airix/mcp_config.json")
     commands.add_row("/mcp remove <nombre>", "Quita un servidor MCP configurado")
     commands.add_row("/mcp reload", "Reconecta todos los servidores MCP configurados")
+    commands.add_row("/contexto", "Muestra qué alcance de contexto (@archivo/@proyecto/@ninguno) está activo")
+    commands.add_row("/analyze [archivos...]", "Corre el motor AST (caché + cascada); sin argumentos, todo el repo")
     commands.add_row("/review", "Ejecuta tests y revisa los cambios de .tmp/")
     commands.add_row(
         "/compact",
@@ -64,7 +66,12 @@ def print_help() -> None:
     references.add_column("Uso", style="white")
     references.add_row("@archivo.py", "Solo ese archivo viaja al agente (ruta exacta o nombre suelto, con o sin @)")
     references.add_row("@proyecto / @all / @workspace", "Todo el repositorio, como antes de existir referencias")
-    references.add_row("(sin @ ni nombre de archivo)", "Consultas no mandan código; los pedidos de cambio sí, completo")
+    references.add_row("@ninguno / @ninguna / @none", "Reinicia el alcance: vuelve a no mandar código hasta la próxima referencia")
+    references.add_row(
+        "(sin @ en el mensaje)",
+        "Reusa el último alcance fijado en la sesión; si nunca se fijó uno, las consultas no mandan "
+        "código y los pedidos de cambio sí, completo",
+    )
     references.add_row("Tab", "Autocompleta archivos tras @ y comandos tras /")
 
     shortcuts = Table(show_header=False, box=None, padding=(0, 2))

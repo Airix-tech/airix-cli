@@ -333,12 +333,19 @@ Mandar siempre el workspace completo es costoso, sobre todo con un LLM local (pu
 
 - `@ruta/archivo.py` o `@archivo.py` → referencia un archivo puntual. Se busca primero por ruta relativa exacta y, si no existe, por nombre de archivo en todo el árbol (respetando los mismos directorios ignorados que el escaneo de workspace). Si el nombre es ambiguo (existe en más de una carpeta), se incluyen todas las coincidencias.
 - `@proyecto`, `@project`, `@all`, `@workspace`, `@codebase`, `@repo`, `@repositorio`, o un `@` suelto sin nada detrás → piden el contexto completo del repositorio (el comportamiento de antes de existir referencias explícitas).
+- `@ninguno`, `@ninguna`, `@none`, `@nada` → reinicia el alcance persistido (ver más abajo) y vuelve a no mandar código hasta la próxima referencia explícita.
 - Mencionar un nombre de archivo sin `@` (p. ej. "corrige deploy_yolo.py") sigue funcionando igual que con `@`, por compatibilidad con el uso ya existente.
-- Una **consulta** (analizar/revisar/preguntar, ver 5.4.1) sin ninguna referencia no manda contenido de archivos: evita el costo de escanear y leer el repo para algo como "hola, cómo estás".
-- Un **pedido de cambio** sin ninguna referencia sí manda el repositorio completo, porque el agente necesita verlo para decidir dónde aplicar el cambio.
 - Una referencia a un archivo que no existe se avisa en el CLI (`No se encontró @nombre.py en el repositorio.`) y no interrumpe el resto de la instrucción.
 
-El panel "Procesando instrucción" siempre muestra qué contexto se usó (`proyecto completo`, `archivo(s): ...`, o `sin archivos`), para que quede claro qué vio el modelo.
+##### Persistencia del alcance (`ContextScope`)
+
+Una referencia explícita (`@proyecto`, `@archivo.py` o `@ninguno`) no solo afecta al mensaje donde aparece: queda **fijada** durante el resto de la sesión del REPL en un `ContextScope` (`commands/run.py`). Las instrucciones siguientes que no traigan ninguna referencia reusan ese mismo alcance en vez de resolverse desde cero, así que alcanza con escribir `@proyecto` una sola vez por sesión, no en cada mensaje. Para volver a no mandar código hay que fijarlo explícitamente con `@ninguno`.
+
+Si nunca se fijó un alcance en la sesión (`ContextScope` en su estado inicial `"unset"`), se mantiene el comportamiento por defecto de siempre:
+- Una **consulta** (analizar/revisar/preguntar, ver 5.4.1) sin ninguna referencia no manda contenido de archivos: evita el costo de escanear y leer el repo para algo como "hola, cómo estás".
+- Un **pedido de cambio** sin ninguna referencia sí manda el repositorio completo, porque el agente necesita verlo para decidir dónde aplicar el cambio.
+
+El comando `/contexto` (ver 5.7) muestra en cualquier momento cuál es el alcance activo. El panel "Procesando instrucción" también lo muestra en cada turno (`proyecto completo`, `archivo(s): ...`, `sin archivos`, agregando "(persistido)" cuando viene de un turno anterior), para que quede claro qué vio el modelo.
 
 ---
 
@@ -432,6 +439,8 @@ La interacción principal se realiza mediante un REPL con Rich.
 - help: muestra ayuda
 - llm show / list / set: consulta y cambia el proveedor/modelo LLM activo
 - mcp show / tools / add / remove / reload: gestiona servidores MCP y sus herramientas (ver 5.5.2)
+- contexto: muestra el alcance de contexto activo (@archivo/@proyecto/@ninguno, ver 5.5.1)
+- analyze [archivos...]: corre el motor AST (caché diferencial + invalidación en cascada, ver 5.9) sin salir del REPL; sin argumentos escanea todo el repo
 - review: revisa los archivos en .tmp/
 - compact: fuerza compactación
 - salir: cierra la sesión
@@ -488,7 +497,9 @@ Esta capa asegura que los cambios propuestos no se mezclen directamente con el �
 
 Directorios: src/airix_cli/ast_engine/
 
-Esta capa implementa análisis incremental de dependencias entre archivos TypeScript.
+Esta capa implementa análisis incremental de dependencias entre archivos Python y TypeScript.
+
+Se dispara con `airix analyze [archivos...]` (CLI) o `/analyze [archivos...]` dentro del REPL (ambos comparten el mismo núcleo, `run_analysis` en `commands/analyze.py`) — nunca se ejecuta solo, así que el caché queda vacío hasta que se corre alguno de los dos.
 
 #### parser.py
 
