@@ -1,0 +1,45 @@
+[project]
+name = "airix-cli"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.7",
+    "tiktoken>=0.7",
+    "watchdog>=4.0",
+    "tomli-w>=1.0",
+    "google-genai>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+airix = "airix_cli.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airix_cli"]
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "test"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# `typer.Option(...)` / `typer.Argument(...)` en los valores por defecto es el
+# idioma de Typer para declarar parámetros, no un B008 real.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
