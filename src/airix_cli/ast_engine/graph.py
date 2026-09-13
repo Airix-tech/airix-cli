@@ -21,6 +21,12 @@ def build_reverse_dependency_graph(cache: dict) -> dict[str, set[str]]:
 
 
 def _resolve_import_path(from_file: str, import_spec: str) -> str | None:
+    if from_file.endswith(".py"):
+        return _resolve_python_import(from_file, import_spec)
+    return _resolve_ts_import(from_file, import_spec)
+
+
+def _resolve_ts_import(from_file: str, import_spec: str) -> str | None:
     # Resolución simplificada de rutas relativas; en producción usar
     # el resolutor de módulos real (tsconfig paths, node_resolve, etc.).
     # Los specs que no empiezan por "." son paquetes de node_modules y no
@@ -38,6 +44,42 @@ def _resolve_import_path(from_file: str, import_spec: str) -> str | None:
         else:
             target = target.with_name(target.name + ".ts")
     return str(target.resolve())
+
+
+def _resolve_python_import(from_file: str, import_spec: str) -> str | None:
+    """
+    Resolución simplificada de imports Python para el grafo de dependencias:
+    - Relativos ("." / ".." / ".pkg.mod"): se resuelven contra el directorio
+      del archivo, subiendo un nivel por cada punto extra (semántica estándar
+      de paquetes relativos).
+    - Absolutos ("airix_cli.ast_engine.cache"): se prueban contra la raíz del
+      repo y contra `src/`, el layout de este propio proyecto. No reproduce
+      sys.path completo ni namespace packages ni editable installs con rutas
+      custom.
+    Un spec que no resuelve a un archivo real (paquete externo, alias
+    inexistente) se descarta en vez de fallar.
+    """
+    dots = len(import_spec) - len(import_spec.lstrip("."))
+    remainder = import_spec[dots:]
+    parts = remainder.split(".") if remainder else []
+
+    if dots > 0:
+        base_dir = Path(from_file).parent
+        for _ in range(dots - 1):
+            base_dir = base_dir.parent
+        candidate_roots = [base_dir]
+    else:
+        candidate_roots = [Path.cwd(), Path.cwd() / "src"]
+
+    for root in candidate_roots:
+        target = root.joinpath(*parts) if parts else root
+        module_file = target.with_suffix(".py")
+        if module_file.is_file():
+            return str(module_file.resolve())
+        init_file = target / "__init__.py"
+        if init_file.is_file():
+            return str(init_file.resolve())
+    return None
 
 
 def cascade_reanalyze(changed_files: list[Path]) -> list[str]:

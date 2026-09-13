@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from airix_cli.ast_engine.hashing import sha256_of
-from airix_cli.ast_engine.parser import parse_ts_file
+from airix_cli.ast_engine.parser import parse_python_file, parse_ts_file
 
 CACHE_PATH = Path(".airix/ast_cache.json")
 
@@ -32,6 +32,6 @@ def analyze_file(path: Path, cache: dict) -> tuple[dict, bool]:
     if isinstance(entry, dict) and entry.get("hash") == current_hash and "symbols" in entry:
         return entry["symbols"], False  # sin cambios → se omite el análisis
 
-    symbols = parse_ts_file(path)
+    symbols = parse_python_file(path) if path.suffix == ".py" else parse_ts_file(path)
     cache[key] = {"hash": current_hash, "symbols": symbols}
     return symbols, True

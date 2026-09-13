@@ -35,6 +35,21 @@ def test_analyze_file_skips_reparse_when_unchanged(tmp_path):
     mock_parse.assert_called_once()
 
 
+def test_analyze_file_dispatches_python_files_to_python_parser(tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text("def hola():\n    pass\n")
+    cache: dict = {}
+
+    with patch("airix_cli.ast_engine.cache.parse_python_file", return_value={"exports": ["hola"]}) as mock_parse, \
+         patch("airix_cli.ast_engine.cache.parse_ts_file") as mock_ts_parse:
+        symbols, reanalyzed = analyze_file(f, cache)
+
+    assert reanalyzed is True
+    assert symbols == {"exports": ["hola"]}
+    mock_parse.assert_called_once()
+    mock_ts_parse.assert_not_called()
+
+
 def test_analyze_file_reparses_when_content_changes(tmp_path):
     f = tmp_path / "a.ts"
     f.write_text("export class A {}")

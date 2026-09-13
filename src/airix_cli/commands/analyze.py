@@ -8,11 +8,8 @@ from airix_cli.ast_engine.graph import cascade_reanalyze
 
 console = Console()
 
-# Nota: parser.py hoy solo implementa parse_ts_file (vía ts-morph), así que
-# el análisis está limitado a TypeScript/TSX hasta que se agregue un parser
-# para otros lenguajes (ver sección 3 de la guía).
-SUPPORTED_EXTENSIONS = {".ts", ".tsx"}
-IGNORED_DIRS = {".git", ".airix", ".tmp", "node_modules", ".venv"}
+SUPPORTED_EXTENSIONS = {".ts", ".tsx", ".py"}
+IGNORED_DIRS = {".git", ".airix", ".tmp", "node_modules", ".venv", "__pycache__"}
 
 
 def analyze(
