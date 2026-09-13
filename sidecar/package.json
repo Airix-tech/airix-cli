@@ -1,0 +1,10 @@
+{
+  "name": "airix-cli-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sidecar Node usado por airix_cli.ast_engine.parser para extraer símbolos AST de TS/JS vía ts-morph",
+  "main": "extract_symbols.js",
+  "dependencies": {
+    "ts-morph": "^23.0.0"
+  }
+}

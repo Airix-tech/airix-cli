@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# airix-cli: área de staging y checkpoints (no se versionan)
+.tmp/
+.airix/checkpoints/
+.airix/session.json
+.airix/ast_cache.json
+.airix/repl_history
+.airix/*.tmp
+
+# Caché de pytest
+.pytest_cache/
+
+# Sidecar Node
+sidecar/node_modules/
