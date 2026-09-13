@@ -1,6 +1,6 @@
 # src/airix_cli/cli.py
 import typer
-from airix_cli.commands import workspace, init, compact, run, rewind, analyze, llm
+from airix_cli.commands import workspace, init, compact, run, rewind, analyze, llm, mcp
 
 app = typer.Typer(
     name="airix",
@@ -10,6 +10,7 @@ app = typer.Typer(
 
 app.add_typer(workspace.app, name="workspace", help="Gestión del contenedor multi-repo")
 app.add_typer(llm.app, name="llm", help="Configuración del proveedor y modelo del asistente")
+app.add_typer(mcp.app, name="mcp", help="Gestión de servidores MCP (Model Context Protocol)")
 app.command("init")(init.init_repo)
 app.command("compact")(compact.compact_session_cmd)
 app.command("run")(run.start_repl)

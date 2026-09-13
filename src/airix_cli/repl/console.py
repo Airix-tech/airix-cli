@@ -4,7 +4,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.prompt import Prompt
 from rich.panel import Panel
@@ -37,18 +38,55 @@ def print_status(message: str, *, style: str = "green", icon: str = "✔") -> No
 
 
 def print_help() -> None:
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column("Comando", style="bright_cyan", no_wrap=True)
-    table.add_column("Acción", style="white")
-    table.add_row("/help", "Muestra esta ayuda")
-    table.add_row("/llm show", "Muestra el proveedor/modelo activo")
-    table.add_row("/llm list <provider>", "Lista modelos disponibles del proveedor")
-    table.add_row("/llm set <provider> <model>", "Guarda la configuración del LLM")
-    table.add_row("/review", "Ejecuta tests y revisa los cambios de .tmp/")
-    table.add_row("/compact", "Fuerza la compactación del historial")
-    table.add_row("/salir", "Cierra la sesión")
-    table.add_row("<instrucción>", "Envía una tarea al agente")
-    console.print(Panel(table, title="[bold]Comandos[/bold]", border_style="blue", expand=False))
+    commands = Table(show_header=False, box=None, padding=(0, 2))
+    commands.add_column("Comando", style="bright_cyan", no_wrap=True)
+    commands.add_column("Acción", style="white")
+    commands.add_row("/help", "Muestra esta ayuda")
+    commands.add_row("/llm show", "Muestra el proveedor/modelo activo")
+    commands.add_row("/llm list <provider>", "Lista modelos disponibles del proveedor")
+    commands.add_row("/llm set <provider> <model>", "Guarda la configuración del LLM")
+    commands.add_row("/mcp show", "Lista servidores MCP configurados y su estado de conexión")
+    commands.add_row("/mcp tools", "Lista las herramientas MCP disponibles (conecta si hace falta)")
+    commands.add_row("/mcp add <nombre> <comando> [args...]", "Agrega un servidor MCP a .airix/mcp_config.json")
+    commands.add_row("/mcp remove <nombre>", "Quita un servidor MCP configurado")
+    commands.add_row("/mcp reload", "Reconecta todos los servidores MCP configurados")
+    commands.add_row("/review", "Ejecuta tests y revisa los cambios de .tmp/")
+    commands.add_row(
+        "/compact",
+        "Resume la sesión (con el LLM activo; si no responde, usa una heurística), guarda decisiones en "
+        "memory.json y borra el historial del REPL (repl_history)",
+    )
+    commands.add_row("/salir", "Cierra la sesión (también Ctrl+D)")
+    commands.add_row("<instrucción>", "Envía una tarea o consulta al agente")
+
+    references = Table(show_header=False, box=None, padding=(0, 2))
+    references.add_column("Referencia", style="bright_green", no_wrap=True)
+    references.add_column("Uso", style="white")
+    references.add_row("@archivo.py", "Solo ese archivo viaja al agente (ruta exacta o nombre suelto, con o sin @)")
+    references.add_row("@proyecto / @all / @workspace", "Todo el repositorio, como antes de existir referencias")
+    references.add_row("(sin @ ni nombre de archivo)", "Consultas no mandan código; los pedidos de cambio sí, completo")
+    references.add_row("Tab", "Autocompleta archivos tras @ y comandos tras /")
+
+    shortcuts = Table(show_header=False, box=None, padding=(0, 2))
+    shortcuts.add_column("Atajo", style="bright_magenta", no_wrap=True)
+    shortcuts.add_column("Acción", style="white")
+    shortcuts.add_row("↑ / ↓", "Recorre instrucciones anteriores (se conservan entre sesiones)")
+    shortcuts.add_row("Ctrl+R", "Busca en ese historial")
+    shortcuts.add_row("Ctrl+C", "Cancela la línea actual sin cerrar la sesión")
+    shortcuts.add_row("Ctrl+D", "Cierra la sesión (con la línea vacía)")
+
+    console.print(Panel(
+        Group(
+            commands,
+            Rule("Referencias @", style="dim"),
+            references,
+            Rule("Atajos de teclado", style="dim"),
+            shortcuts,
+        ),
+        title="[bold]Comandos[/bold]",
+        border_style="blue",
+        expand=False,
+    ))
 
 
 def _staged_relative_path(tmp_file: Path) -> Path:
